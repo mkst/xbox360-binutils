@@ -1,0 +1,164 @@
+--- a/binutils/objdump.c
++++ b/binutils/objdump.c
+@@ -193,6 +193,9 @@
+   disassembler_ftype disassemble_fn;
+   arelent *reloc;
+   struct symbol_entry *symbol_list;
++  /* Sections containing symbols requested by --disassemble=<symbol>.  */
++  asection **symbol_sections;
++  long symbol_section_count;
+ };
+ 
+ /* Architecture to disassemble for, or default if NULL.  */
+@@ -1134,6 +1137,32 @@
+ 	  && strcmp (sec1->name, sec2->name) == 0);
+ }
+ 
++static bool
++symbol_matches_disasm_list (bfd *abfd, asymbol *sym,
++			    const struct symbol_entry *symbol_list)
++{
++  const char *name = bfd_asymbol_name (sym);
++  char *alloc = NULL;
++  bool matches = false;
++
++  if (do_demangle && name[0] != '\0')
++    {
++      alloc = bfd_demangle (abfd, name, demangle_flags);
++      if (alloc != NULL)
++	name = alloc;
++    }
++
++  for (const struct symbol_entry *ent = symbol_list; ent; ent = ent->next)
++    if (streq (name, ent->name))
++      {
++	matches = true;
++	break;
++      }
++
++  free (alloc);
++  return matches;
++}
++
+ static const asection *compare_section;
+ 
+ /* Sort symbols into value order.  */
+@@ -3779,6 +3808,7 @@
+    next_sym
+   } loop_until;
+ 
++  paux = (struct objdump_disasm_info *) pinfo->application_data;
+   if (only_list == NULL)
+     {
+       /* Sections that do not contain machine
+@@ -3793,6 +3823,23 @@
+   else if (!process_section_p (section))
+     return;
+ 
++  if (paux->symbol_list != NULL)
++    {
++      bool found = false;
++
++      /* Avoid loading and sorting sections that cannot contain a requested
++	 symbol.  */
++      for (long i = 0; i < paux->symbol_section_count; ++i)
++	if (is_same_section (paux->symbol_sections[i], section))
++	  {
++	    found = true;
++	    break;
++	  }
++
++      if (!found)
++	return;
++    }
++
+   datasize = bfd_section_size (section);
+   if (datasize == 0)
+     return;
+@@ -3819,7 +3866,6 @@
+     return;
+ 
+   /* Decide which set of relocs to use.  Load them if necessary.  */
+-  paux = (struct objdump_disasm_info *) pinfo->application_data;
+   if (pinfo->dynrelbuf && dump_dynamic_reloc_info)
+     {
+       rel_pp = pinfo->dynrelbuf;
+@@ -3970,27 +4016,10 @@
+ 
+ 	  if (!do_print)
+ 	    {
+-	      const char * name = bfd_asymbol_name (sym);
+-	      char * alloc = NULL;
+-
+-	      if (do_demangle && name[0] != '\0')
+-		{
+-		  /* Demangle the name.  */
+-		  alloc = bfd_demangle (abfd, name, demangle_flags);
+-		  if (alloc != NULL)
+-		    name = alloc;
+-		}
+-
+-	      /* We are not currently printing.  Check to see
+-		 if the current symbol matches any of the requested symbols.  */
+-	      for (const struct symbol_entry *ent = paux->symbol_list;
+-		   ent;
+-		   ent = ent->next)
+-		if (streq (name, ent->name))
+-		  {
+-		    do_print = true;
+-		    break;
+-		  }
++	      /* We are not currently printing.  Check whether the current
++		 symbol matches any of the requested symbols.  */
++	      if (symbol_matches_disasm_list (abfd, sym, paux->symbol_list))
++		do_print = true;
+ 	      if (do_print
+ 		  && bfd_asymbol_value (sym) <= addr)
+ 		{
+@@ -4019,7 +4048,6 @@
+ 		    }
+ 		}
+ 
+-	      free (alloc);
+ 	    }
+ 	}
+ 
+@@ -4189,6 +4217,30 @@
+   disasm_info.dynrelcount = 0;
+   aux.reloc = NULL;
+   aux.symbol_list = disasm_sym_list;
++  aux.symbol_sections = NULL;
++  aux.symbol_section_count = 0;
++
++  if (aux.symbol_list != NULL)
++    for (i = 0; i < sorted_symcount; ++i)
++      {
++	asymbol *sym = sorted_syms[i];
++	long j;
++
++	if (!symbol_matches_disasm_list (abfd, sym, aux.symbol_list))
++	  continue;
++
++	for (j = 0; j < aux.symbol_section_count; ++j)
++	  if (is_same_section (aux.symbol_sections[j], sym->section))
++	    break;
++
++	if (j == aux.symbol_section_count)
++	  {
++	    aux.symbol_sections = xrealloc
++	      (aux.symbol_sections,
++	       (aux.symbol_section_count + 1) * sizeof (*aux.symbol_sections));
++	    aux.symbol_sections[aux.symbol_section_count++] = sym->section;
++	  }
++      }
+ 
+   disasm_info.print_address_func = objdump_print_address;
+   disasm_info.symbol_at_address_func = objdump_symbol_at_address;
+@@ -4281,6 +4333,7 @@
+   disasm_info.dynrelbuf = NULL;
+   disassemble_free_target (&disasm_info);
+  out:
++  free (aux.symbol_sections);
+   free (sorted_syms);
+   sorted_syms = NULL;
+   if (old_xvec)
