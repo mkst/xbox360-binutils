@@ -31,7 +31,7 @@ ARG ZIG_TRIPLE
 COPY *.patch /
 RUN mkdir /binutils && \
     tar -xf /binutils-${BINUTILS_VERSION}.tar.xz -C /binutils --strip-components=1 && \
-    cd /binutils && for patch in ../*.patch; do patch -N -p1 -i $patch; done && \
+    cd /binutils && for patch in ../*.patch; do patch -N -p1 -i "$patch"; done && \
     CC="zig cc -target ${ZIG_TRIPLE}" \
     ./configure --host=${GNU_TRIPLE} --target=powerpc-xenon-pe --prefix=/target \
     --disable-nls --disable-shared --disable-gprof --disable-ld --disable-gold --without-zstd && \
